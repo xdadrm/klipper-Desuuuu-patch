@@ -1,0 +1,36 @@
+name: Sync Fork
+
+on:
+  schedule:
+    - cron: '26 0 * * 2' # Once a week
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout your forked repository
+        uses: actions/checkout@v4
+        with:
+          repository: xdadrm/klipper-Desuuuu-patch
+          token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 0
+
+      - name: Add upstream repository
+        run: |
+          git remote add upstream https://github.com/Klipper3d/klipper.git
+          git fetch upstream
+
+      - name: Sync with upstream/master
+        run: |
+          git fetch upstream master
+          git checkout -B master origin/master
+          git merge upstream/master
+          git push origin master
+
+      - name: Clean up
+        run: |
+          git remote remove upstream
