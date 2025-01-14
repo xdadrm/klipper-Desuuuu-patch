@@ -1,4 +1,9 @@
-# [ℹ️ New version available for testing](https://github.com/Desuuuu/klipper/discussions/74)
+This is an attempt at auto-merging 
+
+[Desuuuu's Klipper Patches](https://github.com/Desuuuu/klipper)
+into [upstream Klipper](https://www.klipper3d.org)
+
+
 
 Welcome to the Klipper project!
 
