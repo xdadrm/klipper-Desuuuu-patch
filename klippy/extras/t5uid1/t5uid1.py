@@ -765,8 +765,7 @@ class T5UID1:
     def probed_matrix(self):
         if self.bed_mesh is None:
             return 0
-        probed_data = self.bed_mesh.status['probed_matrix']
-        count = sum(1 for row in probed_data for point in row if point is not None)
+        count = len(self.probe.probe_session.results)
         points_map = [ 0,  1,  2,  3,  4,
                        9,  8,  7,  6,  5,
                       10, 11, 12, 13, 14,
