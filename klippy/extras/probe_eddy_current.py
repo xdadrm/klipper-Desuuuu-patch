@@ -486,7 +486,7 @@ class EddyTap:
         self._z_min_position = probe.lookup_minimum_z(config)
         self._gather = None
         self._filter_design = None
-        self._tap_threshold = config.getfloat('tap_threshold', 0., minval=0.)
+        self._tap_threshold = config.getfloat('tap_threshold', 0., above=0.)
         if self._tap_threshold:
             self._setup_tap()
     # Setup for "tap" probe request
@@ -503,7 +503,7 @@ class EddyTap:
         mcu = self._sensor_helper.get_mcu()
         sos_filter = trigger_analog.MCU_SosFilter(mcu, cmd_queue, 5)
         self._trigger_analog.setup_sos_filter(sos_filter)
-    def _prep_trigger_analog_tap(self):
+    def _prep_trigger_analog_tap(self, gcmd):
         if not self._tap_threshold:
             raise self._printer.command_error("Tap not configured")
         sos_filter = self._trigger_analog.get_sos_filter()
@@ -511,10 +511,30 @@ class EddyTap:
         sos_filter.set_offset_scale(0, 1., auto_offset=True)
         self._trigger_analog.set_raw_range(0, MAX_VALID_RAW_VALUE)
         convert_frequency = self._sensor_helper.convert_frequency
-        raw_threshold = convert_frequency(self._tap_threshold)
+        tap_threshold = gcmd.get_float("TAP_THRESHOLD",
+                                       self._tap_threshold, above=0.)
+        raw_threshold = convert_frequency(tap_threshold)
         self._trigger_analog.set_trigger('diff_peak_gt', raw_threshold)
     # Measurement analysis to determine "tap" position
-    def central_diff(self, times, values):
+    def _validate_samples_time(self, measures, start_time, end_time):
+        cmderr = self._printer.command_error
+        if end_time - start_time < 0.100:
+            raise cmderr("Tap detected too close to start of move")
+        timestamps = [m[0] for m in measures]
+        if len(timestamps) < 2:
+            raise cmderr("Unable to obtain probe_eddy_current sensor readings")
+        ts = [start_time] + timestamps + [end_time]
+        tdiffs = [ts[i] - ts[i-1] for i in range(1, len(ts))]
+        tmax = max(tdiffs)
+        tmin = min(tdiffs[1:-1])
+        cycle_time = 1.0 / self._sensor_helper.get_samples_per_second()
+        if tmax > cycle_time * 1.25:
+            raise cmderr("Eddy: Gaps in the data: %.3f > %.3f"
+                         % (tmax, cycle_time * 1.25))
+        if tmin < cycle_time * 0.75:
+            raise cmderr("Eddy: CLKIN frequency too low: %.3f < %.3f"
+                         % (tmin, cycle_time * 0.75))
+    def _central_diff(self, times, values):
         velocity = [0.0] * len(values)
         for i in range(1, len(values) - 1):
             delta_v = (values[i+1] - values[i-1])
@@ -523,38 +543,19 @@ class EddyTap:
         velocity[0] = (values[1] - values[0]) / (times[1] - times[0])
         velocity[-1] = (values[-1] - values[-2]) / (times[-1] - times[-2])
         return velocity
-    def validate_samples_time(self, timestamps):
-        sps = self._sensor_helper.get_samples_per_second()
-        cycle_time = 1.0 / sps
-        SYNC_SLACK = 0.001
-        for i in range(1, len(timestamps)):
-            tdiff = timestamps[i] - timestamps[i-1]
-            if cycle_time + SYNC_SLACK < tdiff:
-                logging.error("Eddy: Gaps in the data: %.3f < %.3f" % (
-                    (cycle_time + SYNC_SLACK, tdiff)
-                ))
-                break
-            if cycle_time - SYNC_SLACK > tdiff:
-                logging.error(
-                    "Eddy: CLKIN frequency too low: %.3f > %.3f" % (
-                        (cycle_time - SYNC_SLACK, tdiff)
-                    ))
-                break
     def _pull_tap_time(self, measures):
         tap_time = []
         tap_value = []
         for time, freq, z in measures:
             tap_time.append(time)
             tap_value.append(freq)
-        # If samples have gaps this will not produce adequate data
-        self.validate_samples_time(tap_time)
         # Do the same filtering as on the MCU but without induced lag
         main_design = self._filter_design.get_main_filter()
         try:
             fvals = main_design.filtfilt(tap_value)
         except ValueError as e:
             raise self._printer.command_error(str(e))
-        velocity = self.central_diff(tap_time, fvals)
+        velocity = self._central_diff(tap_time, fvals)
         peak_velocity = max(velocity)
         i = velocity.index(peak_velocity)
         return tap_time[i]
@@ -565,14 +566,15 @@ class EddyTap:
                                       s.get_past_mcu_position(pos_time))
                     for s in kin.get_steppers()}
         return kin.calc_position(kin_spos)
-    def _analyze_tap(self, measures):
+    def _analyze_tap(self, measures, start_time, end_time):
+        self._validate_samples_time(measures, start_time, end_time)
         pos_time = self._pull_tap_time(measures)
         trig_pos = self._lookup_toolhead_pos(pos_time)
         return manual_probe.ProbeResult(trig_pos[0], trig_pos[1], trig_pos[2],
                                         trig_pos[0], trig_pos[1], trig_pos[2])
     # Probe session interface
     def start_probe_session(self, gcmd):
-        self._prep_trigger_analog_tap()
+        self._prep_trigger_analog_tap(gcmd)
         self._gather = EddyGatherSamples(self._printer, self._sensor_helper)
         return self
     def run_probe(self, gcmd):
@@ -591,7 +593,8 @@ class EddyTap:
             # Filter short move
             start_time = move_start_time
         end_time = trigger_time
-        self._gather.add_probe_request(self._analyze_tap, start_time, end_time)
+        self._gather.add_probe_request(self._analyze_tap, start_time, end_time,
+                                       start_time, end_time)
     def pull_probed_results(self):
         return self._gather.pull_probed()
     def end_probe_session(self):
@@ -609,6 +612,11 @@ class EddyScanningProbe:
         self._sample_time_delay = 0.050
         self._sample_time = 0.
         self._is_rapid = False
+        self._printer.register_event_handler("gcode:command_error",
+                                             self._handle_command_error)
+    def _handle_command_error(self):
+        if self._gather is not None:
+            self.end_probe_session()
     def _lookup_toolhead_pos(self, pos_time):
         toolhead = self._printer.lookup_object('toolhead')
         kin = toolhead.get_kinematics()
