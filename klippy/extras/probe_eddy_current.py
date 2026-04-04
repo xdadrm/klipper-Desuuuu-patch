@@ -515,8 +515,8 @@ class EddyTap:
         sps = self._sensor_helper.get_samples_per_second()
         design = trigger_analog.DigitalFilter(sps, cfg_error)
         design.add_lowpass(25.0, 4)
-        # Create the derivative (sample to sample difference) post filter
-        self._filter_design = trigger_analog.DerivativeFilter(design)
+        design.add_derivative()
+        self._filter_design = design
         # Create SOS filter
         cmd_queue = self._trigger_analog.get_dispatch().get_command_queue()
         mcu = self._sensor_helper.get_mcu()
