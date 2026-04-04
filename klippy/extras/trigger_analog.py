@@ -68,6 +68,8 @@ class DigitalFilter:
         if self.initial_state is None:
             return [[0., 0.]] * len(self.filter_sections)
         return self.initial_state
+    def get_size(self):
+        return len(self.filter_sections)
 
 # Control an `sos_filter` object on the MCU
 class MCU_SosFilter:

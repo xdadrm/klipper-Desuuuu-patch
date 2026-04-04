@@ -520,7 +520,8 @@ class EddyTap:
         # Create SOS filter
         cmd_queue = self._trigger_analog.get_dispatch().get_command_queue()
         mcu = self._sensor_helper.get_mcu()
-        sos_filter = trigger_analog.MCU_SosFilter(mcu, cmd_queue, 5)
+        filter_size = design.get_size()
+        sos_filter = trigger_analog.MCU_SosFilter(mcu, cmd_queue, filter_size)
         self._trigger_analog.setup_sos_filter(sos_filter)
     def _prep_trigger_analog_tap(self, gcmd):
         if not self._tap_threshold:
