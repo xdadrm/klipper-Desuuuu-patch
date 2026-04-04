@@ -513,8 +513,8 @@ class EddyTap:
         # Create sos filter "design"
         cfg_error = self._printer.config_error
         sps = self._sensor_helper.get_samples_per_second()
-        design = trigger_analog.DigitalFilter(sps, cfg_error,
-                                              lowpass=25.0, lowpass_order=4)
+        design = trigger_analog.DigitalFilter(sps, cfg_error)
+        design.add_lowpass(25.0, 4)
         # Create the derivative (sample to sample difference) post filter
         self._filter_design = trigger_analog.DerivativeFilter(design)
         # Create SOS filter

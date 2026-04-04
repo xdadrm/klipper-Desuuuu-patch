@@ -160,9 +160,14 @@ class ContinuousTareFilter:
 
     # create a filter design from the parameters
     def design_filter(self, error_func):
-        return trigger_analog.DigitalFilter(self.sps, error_func, self.drift,
-            self.drift_delay, self.buzz, self.buzz_delay, self.notches,
-            self.notch_quality)
+        df = trigger_analog.DigitalFilter(self.sps, error_func)
+        if self.drift:
+            df.add_highpass(self.drift, self.drift_delay)
+        if self.buzz:
+            df.add_lowpass(self.buzz, self.buzz_delay)
+        for notch in self.notches:
+            df.add_notch(notch, self.notch_quality)
+        return df
 
 
 # Combine ContinuousTareFilter and SosFilter into an easy-to-use class

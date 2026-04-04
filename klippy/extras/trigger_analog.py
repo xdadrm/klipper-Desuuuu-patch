@@ -28,53 +28,43 @@ def to_fixed_32(value, frac_bits=0):
 
 # Digital filter designer and container
 class DigitalFilter:
-    def __init__(self, sps, cfg_error, highpass=None, highpass_order=1,
-            lowpass=None, lowpass_order=1, notches=None, notch_quality=2.0):
+    def __init__(self, sps, cfg_error):
         self.filter_sections = []
-        self.initial_state = []
+        self.initial_state = None
         self.sample_frequency = sps
-        # an empty filter can be created without SciPi/numpy
-        if not (highpass or lowpass or notches):
-            return
+        self.cfg_error = cfg_error
+    def get_scipy_signal(self):
         try:
             import scipy.signal as signal
-            import numpy
         except:
-            raise cfg_error("DigitalFilter require the SciPy module")
-        if highpass:
-            self.filter_sections.extend(
-                self._butter(highpass, "highpass", highpass_order))
-        if lowpass:
-            self.filter_sections.extend(
-                self._butter(lowpass, "lowpass", lowpass_order))
-        if notches is None:
-            notches = []
-        for notch_freq in notches:
-            self.filter_sections.append(self._notch(notch_freq, notch_quality))
-        if len(self.filter_sections) > 0:
-            self.initial_state = signal.sosfilt_zi(self.filter_sections)
-
+            raise self.cfg_error("DigitalFilter require the SciPy module")
+        return signal
+    def add_highpass(self, highpass, highpass_order):
+        f = self._butter(highpass, "highpass", highpass_order)
+        self.filter_sections.extend(f)
+    def add_lowpass(self, lowpass, lowpass_order):
+        f = self._butter(lowpass, "lowpass", lowpass_order)
+        self.filter_sections.extend(f)
+    def add_notch(self, notch_freq, notch_quality):
+        signal = self.get_scipy_signal()
+        b, a = signal.iirnotch(notch_freq, Q=notch_quality,
+                               fs=self.sample_frequency)
+        f = signal.tf2sos(b, a)[0]
+        self.filter_sections.append(f)
+    def setup_initial_state(self):
+        if not self.filter_sections:
+            return
+        self.initial_state = signal.sosfilt_zi(self.filter_sections)
     def _butter(self, frequency, btype, order):
-        import scipy.signal as signal
+        signal = self.get_scipy_signal()
         return signal.butter(order, Wn=frequency, btype=btype,
             fs=self.sample_frequency, output='sos')
-
-    def _notch(self, freq, quality):
-        import scipy.signal as signal
-        b, a = signal.iirnotch(freq, Q=quality, fs=self.sample_frequency)
-        return signal.tf2sos(b, a)[0]
-
     def get_filter_sections(self):
         return self.filter_sections
-
     def get_initial_state(self):
+        if self.initial_state is None:
+            return [[0., 0.]] * len(self.filter_sections)
         return self.initial_state
-
-    def filtfilt(self, data):
-        import scipy.signal as signal
-        import numpy
-        data = numpy.array(data)
-        return signal.sosfiltfilt(self.filter_sections, data)
 
 # Produce sample to sample difference (derivative) of a DigitalFilter
 class DerivativeFilter:
