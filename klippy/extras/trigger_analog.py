@@ -25,6 +25,33 @@ def to_fixed_32(value, frac_bits=0):
     fixed_val = int(value * (2**frac_bits))
     return assert_is_int32(fixed_val, frac_bits)
 
+# Pre-generated SOS filters (avoid Scipy package for common installs)
+GeneratedSOS = {
+    ('lowpass', 10.0, 4): [
+        [0.004824343357716228, 0.009648686715432456, 0.004824343357716228,
+         1.0, -1.0485995763626117, 0.2961403575616696],
+        [1.0, 2.0, 1.0, 1.0, -1.3209134308194264, 0.6327387928852766],
+    ],
+}
+
+# Helper tool to pre-generate SOS filters.  Run with something like:
+#  python -c 'import trigger_analog as m; m.pre_gen_filt("lowpass", 250, 25, 4)'
+def pre_gen_filt(btype, sps, freq, order):
+    global GeneratedSOS
+    GeneratedSOS = {}
+    # Create filter
+    df = DigitalFilter(sps, ImportError)
+    fs = df._butter(freq, btype, order)
+    # Write filter info to stdout
+    msgs = []
+    msgs.append("    ('%s', %s, %d): [" % (btype, repr(float(sps)/freq), order))
+    for data in fs:
+        coeffs = ", ".join([repr(float(c)) for c in data])
+        msgs.append("        [%s]," % coeffs,)
+    msgs.append("    ],")
+    msgs.append("")
+    import sys
+    sys.stdout.write("\n".join(msgs))
 
 # Digital filter designer and container
 class DigitalFilter:
@@ -59,6 +86,9 @@ class DigitalFilter:
             return
         self.initial_state = signal.sosfilt_zi(self.filter_sections)
     def _butter(self, frequency, btype, order):
+        key = (btype, float(self.sample_frequency)/frequency, int(order))
+        if key in GeneratedSOS:
+            return GeneratedSOS[key]
         signal = self.get_scipy_signal()
         return signal.butter(order, Wn=frequency, btype=btype,
             fs=self.sample_frequency, output='sos')
