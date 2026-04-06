@@ -4,7 +4,7 @@
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
 import sys, logging, math, bisect
-import mcu
+import mcu, mathutil
 from . import ldc1612, trigger_analog, probe, manual_probe
 
 OUT_OF_RANGE = 99.9
@@ -564,11 +564,10 @@ class EddyTap:
     def _calc_least_squares(self, samples, est_z_contact):
         # XXX - this implementation is not efficient
         len_samples = len(samples)
-        import numpy
-        eqs = numpy.zeros((len_samples, 4))
-        ans = numpy.zeros((len_samples,))
+        eqs = [[0.] * 4 for i in range(len_samples)]
+        ans = [[0.] for i in range(len_samples)]
         for i, (step_z, sensor_freq) in enumerate(samples):
-            ans[i] = sensor_freq
+            ans[i][0] = sensor_freq
             eq = eqs[i]
             eq[0] = 1.
             if step_z <= est_z_contact:
@@ -581,18 +580,21 @@ class EddyTap:
                 eq[1] = 0.
                 eq[2] = step_z
                 eq[3] = step_z * step_z
-        res = numpy.linalg.lstsq(eqs, ans, rcond=None)
-        coeffs = list(res[0])
-        if coeffs[3] < 0.:
+        eqst = mathutil.mat_transp(eqs)
+        eqst_eqs = mathutil.mat_mat_mul(eqst, eqs)
+        eqst_ans = mathutil.mat_mat_mul(eqst, ans)
+        coeffs = mathutil.gaussian_solve(eqst_eqs, eqst_ans)
+        if coeffs is not None and coeffs[3][0] < 0.:
             # z**2 factor can't be negative - retry using only linear
-            res = numpy.linalg.lstsq(eqs[:][:,:3], ans, rcond=None)
-            coeffs = list(res[0]) + [0.]
-        if not res[1]:
-            err = sys.float_info.max
-        else:
-            err = res[1][0]
-        #logging.info("z=%.6f err=%.3f coeffs=%s", est_z_contact, err, coeffs)
-        return err, coeffs
+            alt_eqst_eqs = [ee[:3] for ee in eqst_eqs[:3]]
+            alt_eqst_ans = eqst_ans[:3]
+            coeffs = mathutil.gaussian_solve(alt_eqst_eqs, alt_eqst_ans)
+            if coeffs is not None:
+                coeffs = coeffs + [[0.]]
+        if coeffs is None:
+            return sys.float_info.max, [[0.]] * 4
+        rel_err = -sum([c[0]*a[0] for c, a in zip(coeffs, eqst_ans)])
+        return rel_err, coeffs
     def _find_least_squares(self, data):
         #for d in data:
         #    logging.info("sample: freq=%.3f z=%.6f", d[0], d[1][2])
@@ -629,8 +631,7 @@ class EddyTap:
                 else:
                     min_z = guess_z
         # Return to original freq/z measurement base
-        best_z = float(best_z)
-        bc = [float(v) for v in best_coeffs]
+        bc = [v[0] for v in best_coeffs]
         final_coeffs = (base_z + best_z,
                         base_freq + bc[0] + best_z*bc[2] + best_z*best_z*bc[3],
                         bc[1], bc[2] + 2.*best_z*bc[3], bc[3])
