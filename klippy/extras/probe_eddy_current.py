@@ -561,18 +561,26 @@ class EddyTap:
                                       s.get_past_mcu_position(pos_time))
                     for s in kin.get_steppers()}
         return kin.calc_position(kin_spos)
-    def _calc_least_squares(self, eqs, ans, est_z_contact):
+    def _calc_least_squares(self, samples, est_z_contact):
         # XXX - this implementation is not efficient
-        len_data = len(eqs)
+        len_samples = len(samples)
         import numpy
-        for i in range(len_data):
+        eqs = numpy.zeros((len_samples, 4))
+        ans = numpy.zeros((len_samples,))
+        for i, (step_z, sensor_freq) in enumerate(samples):
+            ans[i] = sensor_freq
             eq = eqs[i]
-            step_z = eq[1]
-            if step_z < est_z_contact:
-                eq[2] = eq[3] = 0.
-                continue
-            eq[2] = (step_z - est_z_contact)
-            eq[3] = (step_z - est_z_contact)**2
+            eq[0] = 1.
+            if step_z <= est_z_contact:
+                # 1*c0 + (z-ezc)*c1 + ezc*c2 + ezc*ezc*c3 = freq
+                eq[1] = step_z - est_z_contact
+                eq[2] = est_z_contact
+                eq[3] = est_z_contact * est_z_contact
+            else:
+                # 1*c0 + 0*c1 + z*c2 + z*z*c3 = freq
+                eq[1] = 0.
+                eq[2] = step_z
+                eq[3] = step_z * step_z
         res = numpy.linalg.lstsq(eqs, ans, rcond=None)
         coeffs = list(res[0])
         if coeffs[3] < 0.:
@@ -586,20 +594,15 @@ class EddyTap:
         #logging.info("z=%.6f err=%.3f coeffs=%s", est_z_contact, err, coeffs)
         return err, coeffs
     def _find_least_squares(self, data):
-        len_data = len(data)
-        import numpy
-        # Populate initial numpy linear least squares arrays
-        eqs = numpy.zeros((len_data, 4))
-        ans = numpy.zeros((len_data,))
-        for i, (sensor_freq, tool_pos) in enumerate(data):
-            ans[i] = sensor_freq
-            eq = eqs[i]
-            eq[0] = 1.
-            eq[1] = tool_pos[2]
-            #logging.info("sample: freq=%.3f z=%.6f", sensor_freq, tool_pos[2])
+        #for d in data:
+        #    logging.info("sample: freq=%.3f z=%.6f", d[0], d[1][2])
+        # Change base of freq/z measurements to improve numerical stability
+        base_z = .5 * (data[0][1][2] + data[-1][1][2])
+        base_freq = .5 * (data[0][0] + data[-1][0])
+        samples = [(d[1][2] - base_z, d[0] - base_freq) for d in data]
         # Run least squares with various z values to reduce residual error
-        min_z = best_z = eqs[0][1]
-        max_z = eqs[-1][1]
+        min_z = best_z = samples[0][0]
+        max_z = samples[-1][0]
         best_err = sys.float_info.max
         best_coeffs = [0., 0., 0., 0.]
         while max_z - min_z > 0.000250:
@@ -610,7 +613,7 @@ class EddyTap:
             else:
                 guess_z = (min_z + best_z) * .5
             # Calculate least squares error for given z
-            guess_err, coeffs = self._calc_least_squares(eqs, ans, guess_z)
+            guess_err, coeffs = self._calc_least_squares(samples, guess_z)
             # Update search bounds
             if guess_err < best_err:
                 if guess_z > best_z:
@@ -625,17 +628,22 @@ class EddyTap:
                     max_z = guess_z
                 else:
                     min_z = guess_z
-        best_coeffs = [float(v) for v in best_coeffs]
-        #logging.info("best: z=%.6f err=%.6f coeffs=%s",
-        #             best_z, best_err, best_coeffs)
-        return float(best_z), best_coeffs
+        # Return to original freq/z measurement base
+        best_z = float(best_z)
+        bc = [float(v) for v in best_coeffs]
+        final_coeffs = (base_z + best_z,
+                        base_freq + bc[0] + best_z*bc[2] + best_z*best_z*bc[3],
+                        bc[1], bc[2] + 2.*best_z*bc[3], bc[3])
+        #logging.info("probe_analysis: coeffs=%s", final_coeffs)
+        return final_coeffs
     def _analyze_pullback(self, measures, start_time, end_time):
         self._validate_samples_time(measures, start_time, end_time)
         # Correlate measurements to toolhead position at time of measurement
         data = [(sensor_freq, self._lookup_toolhead_pos(samp_time))
                 for samp_time, sensor_freq, sensor_z in measures]
         # Find best fit for extracted measurements
-        z_contact, coeffs = self._find_least_squares(data)
+        coeffs = self._find_least_squares(data)
+        z_contact, freq_contact, depress_slope, slope, slope2 = coeffs
         # Report probe position
         trig_idx = len(data)-1
         while trig_idx > 0 and data[trig_idx-1][1][2] > z_contact:
