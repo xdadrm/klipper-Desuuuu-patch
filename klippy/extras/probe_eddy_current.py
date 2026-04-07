@@ -698,13 +698,16 @@ class EddyTap:
         #logging.info("probe_analysis: coeffs=%s", final_coeffs)
         return final_coeffs
     def _analyze_pullback(self, measures, start_time, end_time):
+        reactor = self._printer.get_reactor()
         self._validate_samples_time(measures, start_time, end_time)
         # Correlate measurements to toolhead position at time of measurement
         data = [(sensor_freq, self._lookup_toolhead_pos(samp_time))
                 for samp_time, sensor_freq, sensor_z in measures]
+        reactor.pause(0.)
         # Find best fit for extracted measurements
         coeffs = self._find_least_squares(data)
         z_contact, freq_contact, depress_slope, slope, slope2 = coeffs
+        reactor.pause(0.)
         # Report probe position
         trig_idx = len(data)-1
         while trig_idx > 0 and data[trig_idx-1][1][2] > z_contact:
