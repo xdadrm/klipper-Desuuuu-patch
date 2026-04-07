@@ -666,7 +666,7 @@ class EddyTap:
         max_z = samples[-1][0]
         best_err = sys.float_info.max
         best_coeffs = [0., 0., 0., 0.]
-        while max_z - min_z > 0.000250:
+        while max_z - min_z > 0.000050:
             # Select z value to check
             mid_z = (min_z + max_z) * .5
             if best_z < mid_z:
