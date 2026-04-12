@@ -22,7 +22,7 @@ def assert_is_int32(value, frac_bits):
 # convert a floating point value to a 32 bit fixed point representation
 # checks for overflow
 def to_fixed_32(value, frac_bits=0):
-    fixed_val = int(value * (2**frac_bits))
+    fixed_val = int(round(value * (2**frac_bits)))
     return assert_is_int32(fixed_val, frac_bits)
 
 # Pre-generated SOS filters (avoid Scipy package for common installs)
