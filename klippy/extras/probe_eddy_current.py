@@ -726,9 +726,9 @@ class EddyTap:
         if slope >= 0. or slope2 < 0.:
             self._error_detect("invalid free air slope (s=%.6f s2=%.6f)"
                                % (slope, slope2))
-        if z_contact - min_z < 0.050 or z_contact - min_z > 0.250:
+        if z_contact - min_z < 0.030 or z_contact - min_z > 0.250:
             self._error_detect("invalid depress distance (%.6f vs %.6f:%.6f)"
-                               % (z_contact - min_z, 0.050, 0.250))
+                               % (z_contact - min_z, 0.030, 0.250))
         # Report probe position
         trig_idx = len(data)-1
         while trig_idx > 0 and data[trig_idx-1][1][2] > z_contact:
