@@ -332,7 +332,7 @@ class LoadCellProbingMove:
         sos_filter.set_offset_scale(int(-tare_counts), gpc, Q17_14_FRAC_BITS)
         # update trigger
         trigger_val = self._config_helper.get_trigger_force_grams(gcmd)
-        trigger_frac_grams = trigger_val * FRAC_GRAMS_CONV
+        trigger_frac_grams = int(trigger_val * FRAC_GRAMS_CONV)
         self._mcu_trigger_analog.set_trigger("abs_ge", trigger_frac_grams)
 
     # Probe towards z_min until the trigger_analog on the MCU triggers

@@ -333,7 +333,7 @@ class MCU_trigger_analog:
             self._set_raw_range_cmd.send(args)
             self._last_range_args = args
         # Update trigger in mcu (if it has changed)
-        args = [self._oid, self._trigger_type, to_fixed_32(self._trigger_value)]
+        args = [self._oid, self._trigger_type, self._trigger_value]
         if args != self._last_trigger_args:
             self._set_trigger_cmd.send(args)
             self._last_trigger_args = args
