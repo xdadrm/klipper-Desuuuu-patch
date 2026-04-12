@@ -328,8 +328,7 @@ class LoadCellProbingMove:
         # update internal tare value
         gpc = self._config_helper.get_grams_per_count() * FRAC_GRAMS_CONV
         sos_filter = self._mcu_trigger_analog.get_sos_filter()
-        Q17_14_FRAC_BITS = 14
-        sos_filter.set_offset_scale(int(-tare_counts), gpc, Q17_14_FRAC_BITS)
+        sos_filter.set_offset_scale(int(-tare_counts), gpc)
         # update trigger
         trigger_val = self._config_helper.get_trigger_force_grams(gcmd)
         trigger_frac_grams = int(trigger_val * FRAC_GRAMS_CONV)
