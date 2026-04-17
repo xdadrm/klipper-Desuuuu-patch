@@ -1269,6 +1269,12 @@ heights. The tool will take a couple of minutes to complete. After
 completion, use the SAVE_CONFIG command to store the results in the
 printer.cfg file.
 
+#### PROBE_EDDY_CURRENT_TAP_CALIBRATE
+`PROBE_EDDY_CURRENT_TAP_CALIBRATE [TAP=guess|refine|verify]`: This
+starts a tool that can calibrate the probe's "tap_threshold"
+parameter. See the
+[eddy probe documentation](Eddy_Probe.md#tap-calibration) for details.
+
 #### LDC_CALIBRATE_DRIVE_CURRENT
 `LDC_CALIBRATE_DRIVE_CURRENT CHIP=<config_name>` This tool will
 calibrate the ldc1612 DRIVE_CURRENT0 register. Prior to using this
