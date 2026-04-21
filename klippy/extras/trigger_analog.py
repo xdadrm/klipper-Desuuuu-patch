@@ -22,8 +22,23 @@ def assert_is_int32(value, frac_bits):
 # convert a floating point value to a 32 bit fixed point representation
 # checks for overflow
 def to_fixed_32(value, frac_bits=0):
-    fixed_val = int(value * (2**frac_bits))
+    fixed_val = int(round(value * (2**frac_bits)))
     return assert_is_int32(fixed_val, frac_bits)
+
+# Determine maximum frac bits for a list of values
+def calc_frac_bits(values):
+    if all([v == int(v) for v in values]):
+        return 0
+    mv = max([abs(v) for v in values])
+    frac_bits = 31 - int(mv).bit_length() # 63 - int(mv * (1<<32)).bit_length()
+    if frac_bits <= 0:
+        return 0
+    try:
+        validate = [to_fixed_32(v) for v in values]
+    except OverflowError as e:
+        # Handle rare case where rounding causes an overflow
+        return frac_bits - 1
+    return frac_bits
 
 # Pre-generated SOS filters (avoid Scipy package for common installs)
 GeneratedSOS = {
@@ -112,11 +127,11 @@ class MCU_SosFilter:
         # SOS filter "design"
         self._design = None
         self._coeff_frac_bits = 0
+        self._last_calc_frac_bits = None
         self._start_value = 0.
         # Offset and scaling
         self._offset = 0
         self._scale = 1.
-        self._scale_frac_bits = 0
         self._auto_offset = False
         # MCU commands
         self._oid = self._mcu.create_oid()
@@ -145,11 +160,20 @@ class MCU_SosFilter:
     def get_oid(self):
         return self._oid
 
+    # Determine the frac_bits to use for sos filter coefficients
+    def _calc_coeff_frac_bits(self, filter_sections):
+        coeffs = sum([list(f) for f in filter_sections], [])
+        if not filter_sections or coeffs == self._last_calc_frac_bits:
+            return
+        self._coeff_frac_bits = calc_frac_bits(coeffs)
+        self._last_calc_frac_bits = coeffs
+
     # convert the SciPi SOS filters to fixed point format
     def _convert_filter(self):
         if self._design is None:
             return []
         filter_sections = self._design.get_filter_sections()
+        self._calc_coeff_frac_bits(filter_sections)
         sos_fixed = []
         for section in filter_sections:
             nun_coeff = len(section)
@@ -192,17 +216,14 @@ class MCU_SosFilter:
         self._start_value = start_value
 
     # Set conversion of a raw value 1 to a 1.0 value processed by sos filter
-    def set_offset_scale(self, offset=0, scale=1., scale_frac_bits=0,
-                         auto_offset=False):
+    def set_offset_scale(self, offset=0, scale=1., auto_offset=False):
         self._offset = offset
         self._scale = scale
-        self._scale_frac_bits = scale_frac_bits
         self._auto_offset = auto_offset
 
     # Change the filter coefficients and state at runtime
-    def set_filter_design(self, design, coeff_frac_bits=29):
+    def set_filter_design(self, design):
         self._design = design
-        self._coeff_frac_bits = coeff_frac_bits
 
     # Resets the filter state back to initial conditions at runtime
     def reset_filter(self):
@@ -229,9 +250,9 @@ class MCU_SosFilter:
         for i, state in enumerate(sos_state):
             self._set_state_cmd.send([self._oid, i, state[0], state[1]])
         # Send offset/scale (if they have changed)
-        su = to_fixed_32(self._scale, self._scale_frac_bits)
-        args = (self._oid, self._offset, su, self._scale_frac_bits,
-                self._auto_offset)
+        scale_frac_bits = calc_frac_bits([self._scale])
+        su = to_fixed_32(self._scale, scale_frac_bits)
+        args = (self._oid, self._offset, su, scale_frac_bits, self._auto_offset)
         if args != self._last_sent_offset_scale or self._auto_offset:
             self._set_offset_scale_cmd.send(args)
             self._last_sent_offset_scale = args
@@ -333,7 +354,7 @@ class MCU_trigger_analog:
             self._set_raw_range_cmd.send(args)
             self._last_range_args = args
         # Update trigger in mcu (if it has changed)
-        args = [self._oid, self._trigger_type, to_fixed_32(self._trigger_value)]
+        args = [self._oid, self._trigger_type, self._trigger_value]
         if args != self._last_trigger_args:
             self._set_trigger_cmd.send(args)
             self._last_trigger_args = args
