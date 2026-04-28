@@ -13,12 +13,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout your forked repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           repository: xdadrm/klipper-Desuuuu-patch
           token: ${{ secrets.GITHUB_TOKEN }}
           fetch-depth: 0
-
 
       - name: Set up Git
         run: |
@@ -28,15 +27,29 @@ jobs:
       - name: Add upstream repository
         run: |
           git remote add upstream https://github.com/Klipper3d/klipper.git
-          git fetch upstream
-
       - name: Sync with upstream/master
         run: |
           git fetch upstream master
           git checkout -B master origin/master
-          git merge upstream/master
-          git push origin master
+          git merge --no-commit --no-ff upstream/master || true
 
+          # Check for real conflicts (ignoring workflow dir)
+          if git diff --name-only --diff-filter=U | grep -v '^\.github/workflows/' | grep -q .; then
+            echo "Real merge conflict detected — aborting"
+            git merge --abort
+            exit 1
+          fi
+
+          # Nuke workflows, restore only ours
+          git rm -rf --cached .github/workflows/ 2>/dev/null || true
+          rm -rf .github/workflows/
+          mkdir -p .github/workflows/
+          git show origin/master:.github/workflows/xdadrm_sync.yml > .github/workflows/xdadrm_sync.yml
+          git add .github/workflows/
+
+          git diff --cached --quiet || git commit -m "chore: sync with upstream/master"
+          git push origin master
+    
       - name: Clean up
         run: |
           git remote remove upstream
