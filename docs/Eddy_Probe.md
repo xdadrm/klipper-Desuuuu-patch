@@ -1,20 +1,226 @@
 # Eddy Current Inductive probe
 
-This document describes how to use an
+This document describes the support for
 [eddy current](https://en.wikipedia.org/wiki/Eddy_current) inductive
-probe in Klipper.
+probes in Klipper.
 
-Currently, an eddy current probe can not precisely home Z (i.e., `G28 Z`).
-The sensor can precisely do Z probing (i.e., `PROBE ...`).
-Look at the [homing correction](Eddy_Probe.md#homing-correction-macros)
-for further details.
+These probes detect the bed by measuring the
+[resonant frequency](https://en.wikipedia.org/wiki/Resonance) of a
+coil within the sensor. The closer that coil is to a metal bed the
+higher the coil's resonant frequency. The frequency measurements can
+thus be used to estimate the distance between sensor and bed.
 
-Start by declaring a
+The Klipper eddy current sensor support is primarily intended for bed
+probing. It is possible to "home" the Z axis with an eddy current
+probe, but see the [homing correction](#homing-correction-macros)
+section for important information.
+
+## Probing mechanisms
+
+Unlike traditional bed probes an eddy current sensor supports four
+different methods of probing: default, "scan", "rapid_scan", and
+"tap". The different probing methods are activated by passing a
+`METHOD=xxx` parameter to probe commands (for example,
+`PROBE METHOD=tap`). Each probing method has advantages and
+disadvantages as described below.
+
+### Default probing method
+
+The default probing method behaves most like a traditional bed probe.
+The toolhead descends toward the bed until the sensor detects that it
+is near the bed and then several sensor measurements are taken at the
+halted position to estimate the distance between sensor and bed. This
+probing mechanism is activated by not specifying a `METHOD` parameter
+on probe type commands (eg, a bare `PROBE` command).
+
+Advantages:
+
+* It is the most general purpose probing method. It provides good
+  precision with good flexibility.
+* Can be used in many starting toolhead positions. It is necessary to
+  ensure that the toolhead XY position places the sensor over the
+  metal bed, but otherwise there is flexibility in the exact starting
+  height.
+
+Disadvantages:
+
+* The probe results are subject to thermal drift. Distances reported
+  by the probe correlate to distances measured during initial
+  calibration (via `PROBE_EDDY_CURRENT_CALIBRATE`) and the results may
+  be impacted if probing is run at a different temperature. Changes to
+  the temperature of the bed, sensor coil, sensor electronics, or any
+  metal near the sensor can all impact the results. The impact is
+  small (think microns), but the acceptable precision for a bed probe
+  is also small (again think microns). For best results, it is
+  recommended to run the calibration and subsequent probes at a
+  consistent temperature.
+
+When to use:
+
+This is the default probing method, and it is recommended for most
+probing actions. In particular, it is the recommended probe type for
+bed alignment tools such as `QUAD_GANTRY_LEVEL`, `Z_TILT_ADJUST`,
+`SCREWS_TILT_CALCULATE`, `DELTA_CALIBRATE`, and similar.
+
+### "scan" probing method
+
+The "scan" probing method is similar to the default method, except the
+probe does not descend towards the bed. Instead, the probe gathers
+sensor measurements at the current Z position to estimate the distance
+between sensor and bed. It is useful for `BED_MESH_CALIBRATE` as the
+entire bed can be scanned with only horizontal movements.
+
+Advantages:
+
+* The Z position does not change during probing and there is less
+  chance for Z stepper backlash (and similar) to impact measurements.
+  This can be particularly useful when only relative Z height
+  measurements are desired (eg, when using `zero_reference_position`
+  with `BED_MESH_CALIBRATE`).
+
+* A full bed scan may take less time than the default method.
+
+Disadvantages:
+
+* The bed must be nearly parallel to the printer XY rails and there
+  must not be any large deviations in bed height. For acceptable
+  results the bed scanning must be run with a low `HORIZONTAL_MOVE_Z`
+  so that the sensor remains close to the bed during the entire bed
+  scan. (The smaller the distance the more accurate the results.) In
+  practice, this requires that the distance between nozzle and bed be
+  no more than about a millimeter, and at these distances any notable
+  bed deviations could result in a nozzle/bed collision during
+  horizontal movement.
+
+* The "scan" method has the same thermal drift disadvantages described
+  for the default method. For best results, it is recommended to run
+  the calibration and subsequent probes at a consistent temperature.
+
+When to use:
+
+The "scan" method is typically used during bed mesh calibration. It is
+recommended to always verify the bed is parallel to the printer XY
+rails prior to performing a bed scan. Depending on the printer
+hardware, one may use an automated tool utilizing the default probing
+method to verify the bed is parallel - for example:
+`QUAD_GANTRY_LEVEL RETRY_TOLERANCE=0.250`,
+`Z_TILT_ADJUST RETRY_TOLERANCE=0.250`, or
+`SCREWS_TILT_CALCULATION MAX_TOLERANCE=0.250`.
+
+A bed mesh can then be run with something similar to
+`BED_MESH_CALIBRATE METHOD=scan HORIZONTAL_MOVE_Z=1`.
+
+### "rapid_scan" probing method
+
+The "rapid_scan" probing method is very similar to the "scan" method,
+except the probe does not pause at each point to be measured. Instead,
+measurements taken during horizontal movement near each probing point
+are used to estimate the distance between sensor and bed.
+
+Advantages:
+
+* A "rapid_scan" full bed scan may be slightly faster than the "scan"
+  method.
+
+* Otherwise, it has the same advantages as the "scan" method.
+
+Disadvantages:
+
+* The results of a "rapid_scan" may be less accurate than the "scan"
+  method.
+
+* Same disadvantages as "scan" probes (bed must be parallel and
+  thermal drift).
+
+When to use:
+
+A "rapid_scan" may be useful when performing a large detailed bed mesh
+scan for diagnostic purposes. In this situation, the reduced scanning
+time may outweigh the possible loss of accuracy.
+
+For normal printing, a bed mesh using the regular "scan" method is
+generally preferred for best accuracy and minimal additional probing
+time.
+
+Once the bed is verified to be parallel to the XY rails then one can
+run a rapid bed mesh scan with something similar to
+`BED_MESH_CALIBRATE METHOD=rapid_scan HORIZONTAL_MOVE_Z=1`.
+
+### "tap" probing method
+
+During "tap" probing, the toolhead descends until the nozzle makes
+contact with the bed, the nozzle is then lifted away from the bed, and
+sensor measurements during the lifting movement are analyzed to
+determine the location where the nozzle breaks contact with the bed.
+
+Advantages:
+
+* The probe results are determined by the actual point of contact
+  between nozzle and bed instead of indirect measurements between
+  sensor and bed. This can be particularly useful if one changes
+  nozzles frequently, as the results will take into account the
+  geometry of the current nozzle.
+
+* A "tap" probe does not have the thermal drift issues associated with
+  the other probing methods. The main probe calibration is not
+  utilized during tap probes, and thus one does not need to track
+  temperatures between initial calibration and subsequent probing.
+
+* Axis "twist" inaccuracies are less of an issue during tap probes as
+  there is no XY probe offset to compensate for. However, one must
+  still ensure the toolhead XY position places both the nozzle and
+  sensor above the bed prior to tap probing.
+
+Disadvantages:
+
+* One must ensure both the nozzle and bed are clean prior to tap
+  probing. Any filament on the nozzle or debris on the bed may
+  significantly skew the probe results.
+
+* One must ensure that the nozzle is around 3-20mm away from the bed
+  prior to starting each "tap" probe attempt. If the nozzle starts too
+  close to the bed then contact may not be detected which could result
+  in an uncontrolled nozzle/bed crash. If the nozzle starts very far
+  from the bed then sensor measurements are not accurate and a tap
+  attempt may fail or provide inaccurate results.
+
+* The printer hardware must allow the nozzle to fully make contact
+  with the bed. There must not be any limit switches or carriage stops
+  that make contact prior to the nozzle contacting the bed.
+
+* One must ensure that the nozzle temperature is not too high for the
+  bed. A too high temperature could melt the PEI coatings on some
+  beds, for example.
+
+When to use:
+
+A "tap" probe is often used as one step during a multi-step
+homing/leveling process to account for the current nozzle geometry and
+to reduce errors associated with thermal drift. For example, one might
+deploy a macro that homes, calls `Z_TILT_ADJUST` with default probe
+method, heats the printer to an intermediate temperature, cleans the
+nozzle by repeatedly wiping it over a brush, performs a "tap" probe,
+uses `SET_KINEMATIC_POSITION` with the tap results, runs
+`BED_MESH_CALIBRATE` while utilizing a `zero_reference_position`, and
+then brings the printer to normal printing temperature. The actual
+steps to utilize a "tap" probe depend heavily on the specific printer
+hardware.
+
+A "tap" probe may be initiated with something like `PROBE METHOD=tap`.
+
+## Configuration
+
+To configure an eddy current probe, start by declaring a
 [probe_eddy_current config section](Config_Reference.md#probe_eddy_current)
 in the printer.cfg file. It is recommended to set `descend_z` to
 0.5mm. It is typical for the sensor to require an `x_offset` and
 `y_offset`. If these values are not known, one should estimate the
 values during initial calibration.
+
+Then restart the printer and proceed to the following calibration
+steps.
+
+### Calibrating drive current
 
 The first step in calibration is to determine the appropriate
 DRIVE_CURRENT for the sensor. Home the printer and navigate the
@@ -26,7 +232,8 @@ named `[probe_eddy_current my_eddy_probe]` then one would run
 complete in a few seconds.  After it completes, issue a `SAVE_CONFIG`
 command to save the results to the printer.cfg and restart.
 
-Eddy current is used as a proximity/distance sensor (similar to a laser ruler).
+### Calibrating Z heights
+
 The second step in calibration is to correlate the sensor readings to
 the corresponding Z heights. Home the printer and navigate the
 toolhead so that the nozzle is near the center of the bed. Then run a
@@ -58,54 +265,14 @@ If either the `x_offset` or `y_offset` is modified then be sure to run
 the `PROBE_EDDY_CURRENT_CALIBRATE` command (as described above) after
 making the change.
 
-Once calibration is complete, one may use all the standard Klipper
-tools that use a Z probe.
+Note that eddy current sensors are susceptible to "thermal drift".
+That is, changes in temperature can result in changes in reported Z
+height. Changes in either the bed surface temperature or sensor
+hardware temperature can alter the results. Therefore, for best
+results the calibration done here and the subsequent probing that
+utilizes that calibration should be done at the same temperature.
 
-Note that eddy current sensors (and inductive probes in general) are
-susceptible to "thermal drift". That is, changes in temperature can
-result in changes in reported Z height. Changes in either the bed
-surface temperature or sensor hardware temperature can skew the
-results. It is important that calibration and probing is only done
-when the printer is at a stable temperature.
-
-## Homing correction macros
-
-Because of current limitations, homing and probing
-are implemented differently for the eddy sensors.
-As a result, homing suffers from an offset error,
-while probing handles this correctly.
-
-To correct the homing offset.
-One can use the suggested macro inside the homing override or
-inside the starting G-Code.
-
-[Force move](Config_Reference.md#force_move) section
-have to be defined in the config.
-
-```
-[gcode_macro _RELOAD_Z_OFFSET_FROM_PROBE]
-gcode:
-  {% set Z = printer.toolhead.position.z %}
-  SET_KINEMATIC_POSITION Z={Z - printer.probe.last_probe_position.z}
-
-[gcode_macro SET_Z_FROM_PROBE]
-gcode:
-  {% set METHOD = params.METHOD | default("automatic") %}
-  PROBE METHOD={METHOD}
-  _RELOAD_Z_OFFSET_FROM_PROBE
-  G0 Z5
-```
-
-## Tap calibration
-
-Eddy current probes support a special kind of probing referred to as
-"tap" probing. This mechanism directs the toolhead to descend until
-the nozzle makes contact with the bed. That bed contact may cause a
-change in sensor measurements which can be detected and used to halt
-further downward movement. The nozzle is then lifted away from the bed
-and the sensor measurements during the lifting movement are analyzed
-to determine the location where the nozzle breaks contact with the
-bed.
+### Tap calibration
 
 In order to utilize "tap" probing it is necessary to configure a
 `tap_threshold` parameter. This parameter determines when downward
@@ -113,8 +280,8 @@ toolhead movement during a "tap" probe should be halted. A value too
 large could result in a nozzle/bed contact not detected, which could
 result in the nozzle crashing uncontrollably into the bed. A value too
 small could result in a "tap" probe attempt halting before making
-contact with the bed, which could result in wildly inaccurate probe
-results.
+contact with the bed, which could result in probing errors or
+inaccurate probe results.
 
 The `PROBE_EDDY_CURRENT_TAP_CALIBRATE` command can be used to
 configure an appropriate `tap_threshold` value. This tool may be run
@@ -185,6 +352,34 @@ stage, then one can use the tap_threshold value reported by the tool
 as a starting point for manual attempts. Once a successful probe
 attempt is completed then one can return to the main steps described
 above starting at the "refine" stage.
+
+## Homing correction macros
+
+Because of current limitations, homing and probing
+are implemented differently for the eddy sensors.
+As a result, homing suffers from an offset error,
+while probing handles this correctly.
+
+To correct the homing offset.
+One can use the suggested macro inside the homing override or
+inside the starting G-Code.
+
+[Force move](Config_Reference.md#force_move) section
+have to be defined in the config.
+
+```
+[gcode_macro _RELOAD_Z_OFFSET_FROM_PROBE]
+gcode:
+  {% set Z = printer.toolhead.position.z %}
+  SET_KINEMATIC_POSITION Z={Z - printer.probe.last_probe_position.z}
+
+[gcode_macro SET_Z_FROM_PROBE]
+gcode:
+  {% set METHOD = params.METHOD | default("automatic") %}
+  PROBE METHOD={METHOD}
+  _RELOAD_Z_OFFSET_FROM_PROBE
+  G0 Z5
+```
 
 ## Thermal Drift Calibration
 
