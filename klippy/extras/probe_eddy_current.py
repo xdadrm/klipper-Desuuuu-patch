@@ -7,6 +7,11 @@ import sys, logging, math, bisect
 import mcu, mathutil
 from . import ldc1612, trigger_analog, probe, manual_probe
 
+
+######################################################################
+# Calibration
+######################################################################
+
 OUT_OF_RANGE = 99.9
 
 # Tool for calibrating the sensor Z detection and applying that calibration
@@ -63,6 +68,8 @@ class EddyCalibration:
                 offset = prev_zpos - prev_freq * gain
                 zpos = adj_freq * gain + offset
             samples[i] = (samp_time, freq, round(zpos, 6))
+    def get_calibration(self):
+        return list(self.cal_freqs), list(self.cal_zpos)
     def freq_to_height(self, freq):
         dummy_sample = [(0., freq, 0.)]
         self.apply_calibration(dummy_sample)
@@ -296,6 +303,133 @@ class EddyCalibration:
     def register_drift_compensation(self, comp):
         self.drift_comp = comp
 
+# Tool for calibrating tap_threshold
+class EddyTapCalibration:
+    def __init__(self, config, calibration, eddy_tap):
+        self._printer = config.get_printer()
+        self._name = config.get_name()
+        self._calibration = calibration
+        self._eddy_tap = eddy_tap
+        self._refine_tap_threshold = None
+        gcode = self._printer.lookup_object("gcode")
+        gcode.register_command("PROBE_EDDY_CURRENT_TAP_CALIBRATE",
+                               self.cmd_TAP_CALIBRATE,
+                               desc=self.cmd_TAP_CALIBRATE_help)
+    def _analyze_main_calibration(self):
+        freqs, zpos = self._calibration.get_calibration()
+        if len(freqs) < 2:
+            return None
+        # Find best fit for: freq = c0 + c1*z + c2*z*z
+        eqs = []
+        ans = []
+        for freq, z in zip(freqs, zpos):
+            if z <= 0.750:
+                ans.append([freq])
+                eqs.append([1., z, z*z])
+        eqst = mathutil.mat_transp(eqs)
+        eqst_eqs = mathutil.mat_mat_mul(eqst, eqs)
+        eqst_ans = mathutil.mat_mat_mul(eqst, ans)
+        return mathutil.gaussian_solve(eqst_eqs, eqst_ans)
+    def _describe_main_calibration(self, coeffs):
+        if coeffs is None:
+            return ["Main calibration data not available.", ""]
+        msg = ("Calibration: f=%.3f s=%.3f q=%.3f"
+               % (coeffs[0][0], coeffs[1][0], coeffs[2][0]))
+        return [msg, ""]
+    def _describe_last_tap(self, last_tap):
+        if last_tap is None:
+            return ["Run tap probe for last tap analysis."]
+        status, depress_dist, coeffs = last_tap
+        z_contact, freq_contact, depress_slope, slope, slope2 = coeffs
+        contact_slope_delta = depress_slope - slope
+        m1 = ("Last tap: z=%.6f f=%.3f s=%.3f q=%.3f"
+              % (z_contact, freq_contact, slope, slope2))
+        m2 = ("  depress_dist=%.6f depress_slope=%.3f"
+              % (depress_dist, depress_slope))
+        m3 = ("  contact_slope_delta=%.3f" % (contact_slope_delta,))
+        msgs = [m1, m2, m3]
+        if status != "success":
+            msgs.extend(["", "Warning! Last tap did not succeed."])
+        return msgs
+    def _try_tap(self, gcmd, tap_threshold, samples=1):
+        # Create dummy gcmd with SAMPLES=1
+        fo_params = dict(gcmd.get_command_parameters())
+        fo_params['METHOD'] = "tap"
+        fo_params['TAP_THRESHOLD'] = "%.3f" % (tap_threshold,)
+        fo_params['SAMPLES'] = str(samples)
+        gcode = self._printer.lookup_object('gcode')
+        fo_gcmd = gcode.create_gcode_command("", "", fo_params)
+        gcmd.respond_info("Tap probing with TAP_THRESHOLD=%s SAMPLES=%s"
+                          % (fo_params['TAP_THRESHOLD'], fo_params['SAMPLES']))
+        # Run "tap" probe
+        probe = self._printer.lookup_object('probe')
+        probe_session = probe.start_probe_session(fo_gcmd)
+        probe_session.run_probe(fo_gcmd)
+        positions = probe_session.pull_probed_results()
+        probe_session.end_probe_session()
+        gcmd.respond_info("Tap probing reports z=%.6f" % (positions[0][2],))
+    def _save_tap_threshold(self, gcmd, tap_threshold):
+        configfile = self._printer.lookup_object('configfile')
+        gcmd.respond_info(
+            "%s: tap_threshold: %.3f\n"
+            "The SAVE_CONFIG command will update the printer config file\n"
+            "with the above and restart the printer."
+            % (self._name, tap_threshold))
+        configfile.set(self._name, 'tap_threshold', "%.3f" % (tap_threshold,))
+    cmd_TAP_CALIBRATE_help = "Calibrate tap_threshold for 'tap' probing"
+    def cmd_TAP_CALIBRATE(self, gcmd):
+        mc_coeffs = self._analyze_main_calibration()
+        last_tap = self._eddy_tap.get_last_tap_info()
+        tap_test = gcmd.get("TAP", None)
+        if tap_test is None:
+            # Provide technical information
+            mc_msgs = self._describe_main_calibration(mc_coeffs)
+            lt_msgs = self._describe_last_tap(last_tap)
+            gcmd.respond_info('\n'.join(mc_msgs + lt_msgs))
+        elif tap_test == 'guess':
+            # Attempt tap based on main calibration
+            self._refine_tap_threshold = None
+            if mc_coeffs is None:
+                raise gcmd.error(
+                    "Must complete PROBE_EDDY_CURRENT_CALIBRATE first")
+            self._try_tap(gcmd, mc_coeffs[1][0] * -0.10)
+        elif tap_test == 'refine':
+            # Attempt tap based on change in slope observed during last tap
+            self._refine_tap_threshold = None
+            if last_tap is None or last_tap[0] != "success":
+                raise gcmd.error("Must complete valid 'tap' probe first")
+            status, depress_dist, coeffs = last_tap
+            z_contact, freq_contact, depress_slope, slope, slope2 = coeffs
+            contact_slope_delta = depress_slope - slope
+            try_tap_threshold = contact_slope_delta * 0.20
+            self._try_tap(gcmd, try_tap_threshold)
+            self._refine_tap_threshold = try_tap_threshold
+        elif tap_test == 'verify':
+            # Retry tap several times to verify it is stable
+            if self._refine_tap_threshold is None:
+                raise gcmd.error("Must complete valid 'refine' step first")
+            self._try_tap(gcmd, self._refine_tap_threshold, 5)
+            self._save_tap_threshold(gcmd, self._refine_tap_threshold)
+        else:
+            raise gcmd.error("Please provide a valid TAP parameter")
+
+class DummyDriftCompensation:
+    def get_temperature(self):
+        return 0.
+    def note_z_calibration_start(self):
+        pass
+    def note_z_calibration_finish(self):
+        pass
+    def adjust_freq(self, freq, temp=None):
+        return freq
+    def unadjust_freq(self, freq, temp=None):
+        return freq
+
+
+######################################################################
+# Measurement collection
+######################################################################
+
 # Tool to gather samples and convert them to probe positions
 class EddyGatherSamples:
     def __init__(self, printer, sensor_helper):
@@ -403,6 +537,11 @@ def probe_results_from_avg(measures, toolhead_pos, calibration, offsets):
     return manual_probe.create_probe_result(toolhead_pos,
                                             (offsets[0], offsets[1], sensor_z))
 
+
+######################################################################
+# Probe sessions
+######################################################################
+
 MAX_VALID_RAW_VALUE=0x03ffffff
 
 # Helper for implementing PROBE style commands (descend until trigger)
@@ -508,8 +647,8 @@ class EddyTap:
         self._tap_threshold = config.getfloat('tap_threshold', 0., above=0.)
         self._least_squares_cache = {}
         self._current_tap_threshold = 0.
-        if self._tap_threshold:
-            self._setup_tap()
+        self._setup_tap()
+        self._last_tap = None
     # Setup for "tap" probe request
     def _setup_tap(self):
         # Create sos filter "design"
@@ -526,8 +665,11 @@ class EddyTap:
         sos_filter = trigger_analog.MCU_SosFilter(mcu, cmd_queue, filter_size)
         self._trigger_analog.setup_sos_filter(sos_filter)
     def _prep_trigger_analog_tap(self, gcmd):
-        if not self._tap_threshold:
+        tap_threshold = gcmd.get_float("TAP_THRESHOLD",
+                                       self._tap_threshold, above=0.)
+        if not tap_threshold:
             raise self._printer.command_error("Tap not configured")
+        params = self._param_helper.get_probe_params(gcmd)
         # Setup mcu filter (scale internal values to milli-hz)
         sos_filter = self._trigger_analog.get_sos_filter()
         sos_filter.set_filter_design(self._filter_design)
@@ -536,9 +678,9 @@ class EddyTap:
         sos_filter.set_offset_scale(0, s, auto_offset=True)
         self._trigger_analog.set_raw_range(0, MAX_VALID_RAW_VALUE)
         # Set mcu trigger to tap_threshold
-        tap_threshold = gcmd.get_float("TAP_THRESHOLD",
-                                       self._tap_threshold, above=0.)
-        samp_thresh = int(FRAC_HZ * tap_threshold + 0.5)
+        sps = self._sensor_helper.get_samples_per_second()
+        adj_thresh = tap_threshold * params['probe_speed'] / sps
+        samp_thresh = int(FRAC_HZ * adj_thresh + 0.5)
         self._trigger_analog.set_trigger('diff_peak_gt', samp_thresh)
         self._current_tap_threshold = tap_threshold
     # Measurement analysis to determine "tap" position
@@ -704,7 +846,8 @@ class EddyTap:
         return final_coeffs
     def _error_detect(self, msg):
         raise self._printer.command_error("Unable to detect tap: %s" % (msg,))
-    def _analyze_pullback(self, measures, start_time, end_time, speed):
+    def _analyze_pullback(self, measures, start_time, end_time):
+        self._last_tap = None
         reactor = self._printer.get_reactor()
         self._validate_samples_time(measures, start_time, end_time)
         # Correlate measurements to toolhead position at time of measurement
@@ -719,12 +862,13 @@ class EddyTap:
         # Find best fit for extracted measurements
         coeffs = self._find_least_squares(data)
         z_contact, freq_contact, depress_slope, slope, slope2 = coeffs
+        self._last_tap = ("fail", z_contact - min_z, coeffs)
         reactor.pause(0.)
         sps = self._sensor_helper.get_samples_per_second()
-        contact_slope_delta_per_sample = (depress_slope - slope) * speed / sps
-        if contact_slope_delta_per_sample < self._current_tap_threshold:
+        contact_slope_delta = depress_slope - slope
+        if contact_slope_delta < self._current_tap_threshold:
             self._error_detect("insufficient slope delta (%.6f vs %.6f)"
-                               % (contact_slope_delta_per_sample,
+                               % (contact_slope_delta,
                                   self._current_tap_threshold))
         if slope >= 0. or slope2 < 0.:
             self._error_detect("invalid free air slope (s=%.6f s2=%.6f)"
@@ -732,6 +876,7 @@ class EddyTap:
         if z_contact - min_z < 0.030 or z_contact - min_z > 0.250:
             self._error_detect("invalid depress distance (%.6f vs %.6f:%.6f)"
                                % (z_contact - min_z, 0.030, 0.250))
+        self._last_tap = ("success", z_contact - min_z, coeffs)
         # Report probe position
         trig_idx = len(data)-1
         while trig_idx > 0 and data[trig_idx-1][1][2] > z_contact:
@@ -740,6 +885,8 @@ class EddyTap:
         adj_z_contact = z_contact - self._tap_z_offset
         return manual_probe.ProbeResult(trig_pos[0], trig_pos[1], adj_z_contact,
                                         trig_pos[0], trig_pos[1], trig_pos[2])
+    def get_last_tap_info(self):
+        return self._last_tap
     # Probe session interface
     def start_probe_session(self, gcmd):
         self._prep_trigger_analog_tap(gcmd)
@@ -765,7 +912,7 @@ class EddyTap:
         start_time = retract_start_time - 0.010
         end_time = retract_start_time + 0.150
         self._gather.add_probe_request(self._analyze_pullback, start_time,
-                                       end_time, start_time, end_time, speed)
+                                       end_time, start_time, end_time)
     def pull_probed_results(self):
         return self._gather.pull_probed()
     def end_probe_session(self):
@@ -835,6 +982,11 @@ class EddyScanningProbe:
         self._gather.finish()
         self._gather = None
 
+
+######################################################################
+# Main probe interface
+######################################################################
+
 # Eddy specific ProbeOffsets class (does not store z_offset)
 class EddyProbeOffsets:
     def __init__(self, config):
@@ -893,6 +1045,7 @@ class PrinterEddyProbe:
         # Probing via "tap" interface
         self.eddy_tap = EddyTap(config, self.sensor_helper,
                                 self.param_helper, trig_analog)
+        EddyTapCalibration(config, self.calibration, self.eddy_tap)
         # Probing via "scan" and "rapid_scan" requests
         self.eddy_scan = EddyScanningProbe(config, self.sensor_helper,
                                            self.calibration, self.probe_offsets)
@@ -925,18 +1078,6 @@ class PrinterEddyProbe:
         return self.probe_session.start_probe_session(gcmd)
     def register_drift_compensation(self, comp):
         self.calibration.register_drift_compensation(comp)
-
-class DummyDriftCompensation:
-    def get_temperature(self):
-        return 0.
-    def note_z_calibration_start(self):
-        pass
-    def note_z_calibration_finish(self):
-        pass
-    def adjust_freq(self, freq, temp=None):
-        return freq
-    def unadjust_freq(self, freq, temp=None):
-        return freq
 
 def load_config_prefix(config):
     return PrinterEddyProbe(config)
