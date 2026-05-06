@@ -355,17 +355,16 @@ above starting at the "refine" stage.
 
 ## Homing correction macros
 
-Because of current limitations, homing and probing
-are implemented differently for the eddy sensors.
-As a result, homing suffers from an offset error,
-while probing handles this correctly.
+It is possible to use an eddy current probe to home a Z axis. However,
+due to software limitations, the homing operation does not provide an
+accurate result and it is therefore necessary to perform a multi-step
+process to achieve acceptable accuracy.
 
-To correct the homing offset.
-One can use the suggested macro inside the homing override or
-inside the starting G-Code.
-
-[Force move](Config_Reference.md#force_move) section
-have to be defined in the config.
+To use this process, make sure the `[stepper_z]` config section has
+the `endstop_pin` set to `probe:z_virtual_endstop`. Also make sure the
+[force move](Config_Reference.md#force_move) section is defined and
+ensure its `enable_force_move` option is present and set to true.
+Finally, define the following macros:
 
 ```
 [gcode_macro _RELOAD_Z_OFFSET_FROM_PROBE]
@@ -375,11 +374,69 @@ gcode:
 
 [gcode_macro SET_Z_FROM_PROBE]
 gcode:
-  {% set METHOD = params.METHOD | default("automatic") %}
-  PROBE METHOD={METHOD}
+  PROBE
   _RELOAD_Z_OFFSET_FROM_PROBE
-  G0 Z5
 ```
+
+To home the Z axis, perform an initial Z home using a `G28 Z0` command
+and then run `SET_Z_FROM_PROBE` to obtain an accurate Z position.
+
+It is important that the `SET_Z_FROM_PROBE` macro is used after every
+`G28 Z0` (and similar) homing command. If the Z axis is ever homed
+without running the correction macro then the internal Z positions
+will not be accurate which could lead to nozzle/bed collisions and
+very poor print results. One may wish to consider using a
+`[homing_override]` config section to ensure the correction macro is
+always run.
+
+### Performing initial calibration when homing with probe
+
+In order to home with an eddy probe it is necessary to first calibrate
+the probe via the `PROBE_EDDY_CURRENT_CALIBRATE` command. However,
+that command requires that the printer be homed first.
+
+The following steps may be used to avoid this circular dependency for
+the very first calibration:
+
+1. Define a `[probe_eddy_current]` config section in the printer.cfg
+   file as described in the [configuration section](#configuration).
+
+2. Setup the macros and config sections for Z homing with a probe as
+   described in the main
+   [homing correction macros](#homing-correction-macros) section.
+
+3. Manually adjust the carriages so that the toolhead is near the
+   center of the bed and roughly 20mm away from the bed. Issue
+   `LDC_CALIBRATE_DRIVE_CURRENT CHIP=<config_name>` and `SAVE_CONFIG`
+   commands as described in the
+   [calibrating drive current section](#calibrating-drive-current).
+
+4. Manually move the toolhead so that it is roughly 20mm away from the
+   bed and home the printer's X and Y axes. This is typically done
+   with a `G28 X0 Y0` command. Command the toolhead X and Y position
+   so that the toolhead is roughly over the center of the bed. This is
+   typically done with a command like `G1 X50 Y50` (using appropriate
+   XY values for the printer).
+
+5. Manually adjust the bed so that it is mostly flat relative to the
+   toolhead XY carriages (if necessary). Manually adjust the Z
+   carriage so that the nozzle is roughly 20mm from the bed and issue
+   a `SET_STEPPER_ENABLE STEPPER=stepper_z` command. Issue a
+   `SET_KINEMATIC_POSITION Z=25` command followed by a
+   `PROBE_EDDY_CURRENT_CALIBRATE CHIP=my_eddy_probe` command.
+   Important - after issuing these commands the printer will be able
+   to move in the Z direction, but it does not know the actual Z
+   position. Care must be taken to avoid movement requests that may
+   cause the toolhead to descend into the bed.
+
+6. Complete the eddy probe calibration as described in the
+   [calibrating z heights section](#calibrating-z-heights). Issue a
+   `SAVE_CONFIG` command upon completion.
+
+These steps are only needed to obtain an initial configuration. If one
+needs to rerun `PROBE_EDDY_CURRENT_CALIBRATE` in the future then the
+normal mechanism should be possible once this initial configuration is
+available.
 
 ## Thermal Drift Calibration
 
