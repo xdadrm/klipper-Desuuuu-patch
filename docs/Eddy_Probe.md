@@ -274,14 +274,24 @@ utilizes that calibration should be done at the same temperature.
 
 ### Tap calibration
 
-In order to utilize "tap" probing it is necessary to configure a
-`tap_threshold` parameter. This parameter determines when downward
-toolhead movement during a "tap" probe should be halted. A value too
-large could result in a nozzle/bed contact not detected, which could
-result in the nozzle crashing uncontrollably into the bed. A value too
-small could result in a "tap" probe attempt halting before making
-contact with the bed, which could result in probing errors or
-inaccurate probe results.
+In order to utilize "tap" probing it is necessary to configure some
+parameters.
+
+It must be possible to command the toolhead below the nominal plane of
+the bed. This is typically done by setting `position_min: -1` in the
+`[stepper_z]` config section of the printer.cfg (or similar setting,
+such as `minimum_z_position`, depending on the kinematics). This is
+necessary to ensure the nozzle can be commanded to firmly contact the
+bed. This is also to ensure the nozzle makes contact with the bed
+before it would otherwise be commanded to start deceleration.
+
+It is also necessary to configure a `tap_threshold` parameter. This
+parameter determines when downward toolhead movement during a "tap"
+probe should be halted. A value too large could result in a nozzle/bed
+contact not detected, which could result in the nozzle crashing
+uncontrollably into the bed. A value too small could result in a "tap"
+probe attempt halting before making contact with the bed, which could
+result in probing errors or inaccurate probe results.
 
 The `PROBE_EDDY_CURRENT_TAP_CALIBRATE` command can be used to
 configure an appropriate `tap_threshold` value. This tool may be run
