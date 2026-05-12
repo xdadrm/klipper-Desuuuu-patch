@@ -14,11 +14,23 @@ from . import ldc1612, trigger_analog, probe, manual_probe
 
 OUT_OF_RANGE = 99.9
 
-# Tool for calibrating the sensor Z detection and applying that calibration
+# Dummy temperature adjustments when "[temperature_probe]" not utilized
+class DummyDriftCompensation:
+    def get_temperature(self):
+        return 0.
+    def note_z_calibration_start(self):
+        pass
+    def note_z_calibration_finish(self):
+        pass
+    def adjust_freq(self, freq, temp=None):
+        return freq
+    def unadjust_freq(self, freq, temp=None):
+        return freq
+
+# Storage for frequency to height calibration
 class EddyCalibration:
     def __init__(self, config):
         self.printer = config.get_printer()
-        self.name = config.get_name()
         self.drift_comp = DummyDriftCompensation()
         # Current calibration data
         self.cal_freqs = []
@@ -27,28 +39,25 @@ class EddyCalibration:
         if cal is not None:
             cal = [list(map(float, d.strip().split(':', 1)))
                    for d in cal.split(',')]
-            self.load_calibration(cal)
-        # Probe calibrate state
-        self.probe_speed = 0.
-        # Register commands
-        cname = self.name.split()[-1]
-        gcode = self.printer.lookup_object('gcode')
-        gcode.register_mux_command("PROBE_EDDY_CURRENT_CALIBRATE", "CHIP",
-                                   cname, self.cmd_EDDY_CALIBRATE,
-                                   desc=self.cmd_EDDY_CALIBRATE_help)
-        gcode.register_command('Z_OFFSET_APPLY_PROBE',
-                               self.cmd_Z_OFFSET_APPLY_PROBE,
-                               desc=self.cmd_Z_OFFSET_APPLY_PROBE_help)
+            self._load_calibration(cal)
+    def _load_calibration(self, cal):
+        cal = sorted([(c[1], c[0]) for c in cal])
+        self.cal_freqs = [c[0] for c in cal]
+        self.cal_zpos = [c[1] for c in cal]
     def get_printer(self):
         return self.printer
+    def note_z_calibration_start(self):
+        self.drift_comp.note_z_calibration_start()
+    def note_z_calibration_finish(self):
+        self.drift_comp.note_z_calibration_finish()
+    def register_drift_compensation(self, comp):
+        self.drift_comp = comp
     def verify_calibrated(self):
         if len(self.cal_freqs) <= 2:
             raise self.printer.command_error(
                 "Must calibrate probe_eddy_current first")
-    def load_calibration(self, cal):
-        cal = sorted([(c[1], c[0]) for c in cal])
-        self.cal_freqs = [c[0] for c in cal]
-        self.cal_zpos = [c[1] for c in cal]
+    def get_calibration(self):
+        return list(self.cal_freqs), list(self.cal_zpos)
     def apply_calibration(self, samples):
         cur_temp = self.drift_comp.get_temperature()
         for i, (samp_time, freq, dummy_z) in enumerate(samples):
@@ -68,8 +77,6 @@ class EddyCalibration:
                 offset = prev_zpos - prev_freq * gain
                 zpos = adj_freq * gain + offset
             samples[i] = (samp_time, freq, round(zpos, 6))
-    def get_calibration(self):
-        return list(self.cal_freqs), list(self.cal_zpos)
     def freq_to_height(self, freq):
         dummy_sample = [(0., freq, 0.)]
         self.apply_calibration(dummy_sample)
@@ -90,6 +97,40 @@ class EddyCalibration:
         offset = prev_freq - prev_zpos * gain
         freq = height * gain + offset
         return self.drift_comp.unadjust_freq(freq)
+
+# Implement PROBE_EDDY_CURRENT_CALIBRATE (and similar)
+class EddyCalibrationTool:
+    def __init__(self, config, calibration):
+        self.printer = config.get_printer()
+        self.name = config.get_name()
+        self.calibration = calibration
+        # Probe calibrate state
+        self.probe_speed = 0.
+        # Register commands
+        cname = self.name.split()[-1]
+        gcode = self.printer.lookup_object('gcode')
+        gcode.register_mux_command("PROBE_EDDY_CURRENT_CALIBRATE", "CHIP",
+                                   cname, self.cmd_EDDY_CALIBRATE,
+                                   desc=self.cmd_EDDY_CALIBRATE_help)
+        gcode.register_command('Z_OFFSET_APPLY_PROBE',
+                               self.cmd_Z_OFFSET_APPLY_PROBE,
+                               desc=self.cmd_Z_OFFSET_APPLY_PROBE_help)
+    def _save_calibration(self, z_freq_pairs):
+        gcode = self.printer.lookup_object("gcode")
+        gcode.respond_info(
+            "The SAVE_CONFIG command will update the printer config file\n"
+            "and restart the printer.")
+        # Save results
+        cal_contents = []
+        for i, (pos, freq) in enumerate(z_freq_pairs):
+            if not i % 3:
+                cal_contents.append('\n')
+            cal_contents.append("%.6f:%.3f" % (pos, freq))
+            cal_contents.append(',')
+        cal_contents.pop()
+        configfile = self.printer.lookup_object('configfile')
+        configfile.set(self.name, 'calibrate', ''.join(cal_contents))
+    # PROBE_EDDY_CURRENT_CALIBRATE
     def do_calibration_moves(self, move_speed):
         toolhead = self.printer.lookup_object('toolhead')
         kin = toolhead.get_kinematics()
@@ -104,7 +145,7 @@ class EddyCalibration:
             return True
         self.printer.lookup_object(self.name).add_client(handle_batch)
         toolhead.dwell(1.)
-        self.drift_comp.note_z_calibration_start()
+        self.calibration.note_z_calibration_start()
         # Move to each 40um position
         max_z = 4.0
         samp_dist = 0.040
@@ -131,7 +172,7 @@ class EddyCalibration:
             times.append((start_query_time, end_query_time, kin_pos[2]))
         toolhead.dwell(1.0)
         toolhead.wait_moves()
-        self.drift_comp.note_z_calibration_finish()
+        self.calibration.note_z_calibration_finish()
         # Finish data collection
         is_finished = True
         # Correlate query responses
@@ -148,7 +189,6 @@ class EddyCalibration:
             raise self.printer.command_error(
                 "Failed calibration - incomplete sensor data")
         return cal
-
     def _median(self, values):
         values = sorted(values)
         n = len(values)
@@ -252,21 +292,13 @@ class EddyCalibration:
               "Failed calibration - No usable data")
         z_freq_pairs = [(pos, freq) for pos, freq, _, _ in filtered]
         self._save_calibration(z_freq_pairs)
-    def _save_calibration(self, z_freq_pairs):
-        gcode = self.printer.lookup_object("gcode")
-        gcode.respond_info(
-            "The SAVE_CONFIG command will update the printer config file\n"
-            "and restart the printer.")
-        # Save results
-        cal_contents = []
-        for i, (pos, freq) in enumerate(z_freq_pairs):
-            if not i % 3:
-                cal_contents.append('\n')
-            cal_contents.append("%.6f:%.3f" % (pos, freq))
-            cal_contents.append(',')
-        cal_contents.pop()
-        configfile = self.printer.lookup_object('configfile')
-        configfile.set(self.name, 'calibrate', ''.join(cal_contents))
+    cmd_EDDY_CALIBRATE_help = "Calibrate eddy current probe"
+    def cmd_EDDY_CALIBRATE(self, gcmd):
+        self.probe_speed = gcmd.get_float("PROBE_SPEED", 5., above=0.)
+        # Start manual probe
+        manual_probe.ManualProbeHelper(self.printer, gcmd,
+                                       self.post_manual_probe)
+    # Z_OFFSET_APPLY_PROBE
     def _save_tap_z_offset(self, gcmd, homing_z):
         eventtime = self.printer.get_reactor().monotonic()
         configfile = self.printer.lookup_object('configfile')
@@ -280,12 +312,6 @@ class EddyCalibration:
             "with the above and restart the printer."
             % (self.name, new_calibrate))
         configfile.set(self.name, 'tap_z_offset', "%.3f" % (new_calibrate,))
-    cmd_EDDY_CALIBRATE_help = "Calibrate eddy current probe"
-    def cmd_EDDY_CALIBRATE(self, gcmd):
-        self.probe_speed = gcmd.get_float("PROBE_SPEED", 5., above=0.)
-        # Start manual probe
-        manual_probe.ManualProbeHelper(self.printer, gcmd,
-                                       self.post_manual_probe)
     cmd_Z_OFFSET_APPLY_PROBE_help = "Adjust the probe's z_offset"
     def cmd_Z_OFFSET_APPLY_PROBE(self, gcmd):
         gcode_move = self.printer.lookup_object("gcode_move")
@@ -296,12 +322,11 @@ class EddyCalibration:
         if gcmd.get("METHOD", "").lower() == "tap":
             self._save_tap_z_offset(gcmd, offset)
             return
-        cal_zpos = [z - offset for z in self.cal_zpos]
-        z_freq_pairs = zip(cal_zpos, self.cal_freqs)
+        cal_freqs, cal_zpos = self.calibration.get_calibration()
+        cal_zpos = [z - offset for z in cal_zpos]
+        z_freq_pairs = zip(cal_zpos, cal_freqs)
         z_freq_pairs = sorted(z_freq_pairs)
         self._save_calibration(z_freq_pairs)
-    def register_drift_compensation(self, comp):
-        self.drift_comp = comp
 
 # Tool for calibrating tap_threshold
 class EddyTapCalibration:
@@ -412,18 +437,6 @@ class EddyTapCalibration:
             self._save_tap_threshold(gcmd, self._refine_tap_threshold)
         else:
             raise gcmd.error("Please provide a valid TAP parameter")
-
-class DummyDriftCompensation:
-    def get_temperature(self):
-        return 0.
-    def note_z_calibration_start(self):
-        pass
-    def note_z_calibration_finish(self):
-        pass
-    def adjust_freq(self, freq, temp=None):
-        return freq
-    def unadjust_freq(self, freq, temp=None):
-        return freq
 
 
 ######################################################################
@@ -1025,6 +1038,7 @@ class PrinterEddyProbe:
     def __init__(self, config):
         self.printer = config.get_printer()
         self.calibration = EddyCalibration(config)
+        EddyCalibrationTool(config, self.calibration)
         # Sensor type
         sensors = { "ldc1612": ldc1612.LDC1612 }
         sensor_type = config.getchoice('sensor_type', {s: s for s in sensors})
