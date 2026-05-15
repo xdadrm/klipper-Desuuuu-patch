@@ -346,8 +346,13 @@ class T5UID1:
         self._t5uid1_write_cmd = self.mcu.lookup_command(
             "t5uid1_write oid=%c command=%c data=%*s", cq=cmd_queue)
 
-        self.mcu.register_response(self._handle_t5uid1_received,
-                                   "t5uid1_received")
+        if hasattr(self.mcu, "register_serial_response"):
+            self.mcu.register_serial_response(
+                self._handle_t5uid1_received,
+                "t5uid1_received command=%c data=%*s")
+        else:
+            self.mcu.register_response(self._handle_t5uid1_received,
+                                       "t5uid1_received")
 
     def _handle_ready(self):
         self.toolhead = self.printer.lookup_object('toolhead')
