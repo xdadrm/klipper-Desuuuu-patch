@@ -351,10 +351,7 @@ class EddyTapCalibration:
             if z <= 0.750:
                 ans.append([freq])
                 eqs.append([1., z, z*z])
-        eqst = mathutil.mat_transp(eqs)
-        eqst_eqs = mathutil.mat_mat_mul(eqst, eqs)
-        eqst_ans = mathutil.mat_mat_mul(eqst, ans)
-        return mathutil.gaussian_solve(eqst_eqs, eqst_ans)
+        return mathutil.solve_linear_equations(eqs, ans)
     def _describe_main_calibration(self, coeffs):
         if coeffs is None:
             return ["Main calibration data not available.", ""]

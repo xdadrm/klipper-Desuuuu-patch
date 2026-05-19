@@ -141,23 +141,41 @@ def matrix_mul(m1, s):
 # Matrix helper functions for NxM matrices
 ######################################################################
 
-def mat_mat_mul(a, b):
-    if len(a[0]) != len(b):
-        return None
-    res = []
-    for i in range(len(a)):
-        res.append([])
-        for j in range(len(b[0])):
-            res[i].append(sum(a[i][k] * b[k][j] for k in range(len(b))))
-    return res
-
+# Transpose a matrix
 def mat_transp(a):
-    res = []
-    for i in range(len(a[0])):
-        res.append([a[j][i] for j in range(len(a))])
+    return [[a[j][i] for j in range(len(a))]
+            for i in range(len(a[0]))]
+
+# Multiply two matrices
+def mat_mat_mul(a, b):
+    rows_a = len(a)
+    cols_a = len(a[0])
+    rows_b = len(b)
+    cols_b = len(b[0])
+    if cols_a != rows_b:
+        return None
+    return [[sum([a[i][k] * b[k][j] for k in range(rows_b)])
+             for j in range(cols_b)]
+            for i in range(rows_a)]
+
+# Optimized version of mat_mat_mul(mat_transp(a), b)
+def mat_transp_mul(a, b):
+    rows_at = len(a[0])
+    cols_at = len(a)
+    rows_b = len(b)
+    cols_b = len(b[0])
+    if cols_at != rows_b:
+        return None
+    res = [[0.] * cols_b for i in range(rows_at)]
+    for i in range(rows_at):
+        for j in range(cols_b):
+            if a is b and j < i:
+                res[i][j] = res[j][i]
+                continue
+            res[i][j] = sum([a[k][i] * b[k][j] for k in range(rows_b)])
     return res
 
-def gaussian_solve(a, rhs):
+def gaussian_solve(a, rhs, allow_underdetermined=False):
     res = copy.deepcopy(rhs)
     m = copy.deepcopy(a)
     n = len(m)
@@ -170,10 +188,13 @@ def gaussian_solve(a, rhs):
             m[i], m[j] = m[j], m[i]
             res[i], res[j] = res[j], res[i]
 
-        if abs(m[i][i]) < 1e-10:
-            return None
         # Scale the i-th row
-        recipr = 1. / m[i][i]
+        if abs(m[i][i]) < 1e-10:
+            if not allow_underdetermined:
+                return None
+            recipr = 0.
+        else:
+            recipr = 1. / m[i][i]
         for j in range(i+1, n):
             m[i][j] *= recipr
         for j in range(len(res[i])):
@@ -196,6 +217,12 @@ def gaussian_solve(a, rhs):
     return res
 
 def pseudo_inverse(m):
+    mtm = mat_transp_mul(m, m)
     mt = mat_transp(m)
-    mtm = mat_mat_mul(mt, m)
     return gaussian_solve(mtm, mt)
+
+# Find least squares solution for a set of linear equations
+def solve_linear_equations(eqs, ans, allow_underdetermined=False):
+    eqst_eqs = mat_transp_mul(eqs, eqs)
+    eqst_ans = mat_transp_mul(eqs, ans)
+    return gaussian_solve(eqst_eqs, eqst_ans, allow_underdetermined)
