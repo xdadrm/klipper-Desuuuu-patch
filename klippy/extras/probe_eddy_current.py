@@ -572,6 +572,7 @@ class EddyDescend:
             self._descend_z = config.getfloat('descend_z', above=0.)
         self._z_min_position = probe.lookup_minimum_z(config)
         self._gather = None
+        probe.HomingViaProbeHelper(config, self._descend_z)
     def _prep_trigger_analog(self):
         sos_filter = self._trigger_analog.get_sos_filter()
         sos_filter.set_filter_design(None)
@@ -593,7 +594,9 @@ class EddyDescend:
         speed = self._param_helper.get_probe_params(gcmd)['probe_speed']
         # Perform probing move
         phoming = self._printer.lookup_object('homing')
-        trig_pos = phoming.probing_move(self._trigger_analog, pos, speed)
+        check_movement = not phoming.check_probe_first_home(gcmd)
+        trig_pos = phoming.probing_move(self._trigger_analog, pos, speed,
+                                        check_movement=check_movement)
         # Extract samples
         start_time = self._trigger_analog.get_last_trigger_time() + 0.050
         end_time = start_time + 0.100
@@ -607,41 +610,6 @@ class EddyDescend:
     def end_probe_session(self):
         self._gather.finish()
         self._gather = None
-
-# Wrapper to emulate mcu_endstop for probe:z_virtual_endstop
-# Note that this does not provide accurate results
-class EddyEndstopWrapper:
-    def __init__(self, sensor_helper, eddy_descend):
-        self._sensor_helper = sensor_helper
-        self._eddy_descend = eddy_descend
-        self._hw_probe_session = None
-    # Interface for MCU_endstop
-    def get_mcu(self):
-        return self._sensor_helper.get_mcu()
-    def add_stepper(self, stepper):
-        pass
-    def get_steppers(self):
-        return self._eddy_descend._trigger_analog.get_steppers()
-    def home_start(self, print_time, sample_time, sample_count, rest_time,
-                   triggered=True):
-        return self._eddy_descend._trigger_analog.home_start(
-            print_time, sample_time, sample_count, rest_time, triggered)
-    def home_wait(self, home_end_time):
-        return self._eddy_descend._trigger_analog.home_wait(home_end_time)
-    def query_endstop(self, print_time):
-        return False # XXX
-    # Interface for HomingViaProbeHelper
-    def multi_probe_begin(self):
-        self._hw_probe_session = self._eddy_descend.start_probe_session(None)
-    def multi_probe_end(self):
-        self._hw_probe_session.end_probe_session()
-        self._hw_probe_session = None
-    def probe_prepare(self, hmove):
-        pass
-    def probe_finish(self, hmove):
-        pass
-    def get_position_endstop(self):
-        return self._eddy_descend._descend_z
 
 # Probing helper for "tap" requests
 class EddyTap:
@@ -1046,25 +1014,23 @@ class PrinterEddyProbe:
         # Basic probe requests
         self.probe_offsets = EddyProbeOffsets(config)
         self.param_helper = EddyParameterHelper(config)
-        self.eddy_descend = EddyDescend(
+        eddy_descend = EddyDescend(
             config, self.sensor_helper, self.calibration, self.probe_offsets,
             self.param_helper, trig_analog)
-        # Create wrapper to support Z homing with probe
-        mcu_probe = EddyEndstopWrapper(self.sensor_helper, self.eddy_descend)
-        probe.HomingViaProbeHelper(config, mcu_probe,
-                                   self.probe_offsets, self.param_helper)
+        self.eddy_descend_session = probe.SampleAveragingHelper(
+            config, self.param_helper, eddy_descend.start_probe_session)
         # Probing via "tap" interface
-        self.eddy_tap = EddyTap(config, self.sensor_helper,
-                                self.param_helper, trig_analog)
-        EddyTapCalibration(config, self.calibration, self.eddy_tap)
+        eddy_tap = EddyTap(config, self.sensor_helper,
+                           self.param_helper, trig_analog)
+        EddyTapCalibration(config, self.calibration, eddy_tap)
+        self.eddy_tap_session = probe.SampleAveragingHelper(
+            config, self.param_helper, eddy_tap.start_probe_session)
         # Probing via "scan" and "rapid_scan" requests
         self.eddy_scan = EddyScanningProbe(config, self.sensor_helper,
                                            self.calibration, self.probe_offsets)
         # Register with main probe interface
         self.cmd_helper = probe.ProbeCommandHelper(config, self,
                                                    can_set_z_offset=False)
-        self.probe_session = probe.ProbeSessionHelper(
-            config, self.param_helper, self._start_descend_wrapper)
         self.printer.add_object('probe', self)
     def add_client(self, cb):
         self.sensor_helper.add_client(cb)
@@ -1076,17 +1042,13 @@ class PrinterEddyProbe:
         return self.probe_offsets.get_offsets(gcmd)
     def get_status(self, eventtime):
         return self.cmd_helper.get_status(eventtime)
-    def _start_descend_wrapper(self, gcmd):
-        method = gcmd.get('METHOD', 'automatic').lower()
-        if method == "tap":
-            return self.eddy_tap.start_probe_session(gcmd)
-        return self.eddy_descend.start_probe_session(gcmd)
     def start_probe_session(self, gcmd):
         method = gcmd.get('METHOD', 'automatic').lower()
         if method in ('scan', 'rapid_scan'):
             return self.eddy_scan.start_probe_session(gcmd)
-        # For "tap" and normal, probe_session can average multiple attempts
-        return self.probe_session.start_probe_session(gcmd)
+        elif method == 'tap':
+            return self.eddy_tap_session.start_probe_session(gcmd)
+        return self.eddy_descend_session.start_probe_session(gcmd)
     def register_drift_compensation(self, comp):
         self.calibration.register_drift_compensation(comp)
 

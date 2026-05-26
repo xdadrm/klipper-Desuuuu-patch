@@ -5,7 +5,10 @@
 # This file may be distributed under the terms of the GNU GPLv3 license.
 import logging, math
 import mcu
-from . import probe, manual_probe, trigger_analog, load_cell, hx71x, ads1220
+from . import hx71x
+from . import ads1220
+from . import ads131m0x
+from . import probe, manual_probe, trigger_analog, load_cell
 
 np = None  # delay NumPy import until configuration time
 
@@ -483,6 +486,7 @@ class LoadCellPrinterProbe:
         sensors = {}
         sensors.update(hx71x.HX71X_SENSOR_TYPES)
         sensors.update(ads1220.ADS1220_SENSOR_TYPE)
+        sensors.update(ads131m0x.ADS131M0X_SENSOR_TYPES)
         sensor_class = config.getchoice('sensor_type', sensors)
         sensor = sensor_class(config)
         self._load_cell = load_cell.LoadCell(config, sensor)
@@ -506,11 +510,11 @@ class LoadCellPrinterProbe:
             config_helper)
         tap_session = TapSession(config, self._tapping_move,
                                  self._probe_offsets, self._param_helper)
-        self._probe_session = probe.ProbeSessionHelper(config,
+        self._probe_session = probe.SampleAveragingHelper(config,
             self._param_helper, tap_session.start_probe_session)
         # printer integration
         LoadCellProbeCommands(config, load_cell_probing_move)
-        probe.ProbeVirtualEndstopDeprecation(config)
+        probe.HomingViaProbeHelper(config, self.get_offsets()[2])
         self._printer.add_object('probe', self)
 
     def get_probe_params(self, gcmd=None):
