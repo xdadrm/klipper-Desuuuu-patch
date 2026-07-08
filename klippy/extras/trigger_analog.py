@@ -34,7 +34,7 @@ def calc_frac_bits(values):
     if frac_bits <= 0:
         return 0
     try:
-        validate = [to_fixed_32(v) for v in values]
+        validate = [to_fixed_32(v, frac_bits) for v in values]
     except OverflowError as e:
         # Handle rare case where rounding causes an overflow
         return frac_bits - 1
