@@ -11,8 +11,8 @@ import mcu
 # SOS filters (Second Order Sectional)
 ######################################################################
 
-MAX_INT32 = (2 ** 31)
-MIN_INT32 = -(2 ** 31) - 1
+MAX_INT32 = (2 ** 31) - 1
+MIN_INT32 = -(2 ** 31)
 def assert_is_int32(value, frac_bits):
     if value > MAX_INT32 or value < MIN_INT32:
         raise OverflowError("Fixed point Q%d.%d overflow"
